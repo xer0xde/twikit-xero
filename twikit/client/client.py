@@ -4291,24 +4291,27 @@ class Client:
         """
         response, _ = await self.gql.community_tweet_search_module_query(community_id, query, count, cursor)
 
-        items = find_dict(response, 'entries', find_one=True)[0]
+        items_ = find_dict(response, 'entries', find_one=True)
+        if not items_:
+            return Result([])
+        items = items_[0]
         tweets = []
         for item in items:
-            if not item['entryId'].startswith('tweet'):
+            if not item.get('entryId', '').startswith('tweet'):
                 continue
 
             tweet = tweet_from_data(self, item)
             if tweet is not None:
                 tweets.append(tweet)
 
-        next_cursor = items[-1]['content']['value']
-        previous_cursor = items[-2]['content']['value']
+        next_cursor = items[-1].get('content', {}).get('value') if items else None
+        previous_cursor = items[-2].get('content', {}).get('value') if len(items) >= 2 else None
 
         return Result(
             tweets,
-            partial(self.search_community_tweet, community_id, query, count, next_cursor),
+            partial(self.search_community_tweet, community_id, query, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.search_community_tweet, community_id, query, count, previous_cursor),
+            partial(self.search_community_tweet, community_id, query, count, previous_cursor) if previous_cursor else None,
             previous_cursor,
         )
 
