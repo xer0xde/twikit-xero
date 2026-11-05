@@ -226,7 +226,10 @@ class GuestClient:
         <User id="...">
         """
         response, _ = await self.gql.user_by_screen_name(screen_name)
-        return User(self, response['data']['user']['result'])
+        user_data = response.get('data', {}).get('user', {}).get('result')
+        if not user_data:
+            raise Exception(f'User @{screen_name} not found')
+        return User(self, user_data)
 
     async def get_user_by_id(self, user_id: str) -> User:
         """
@@ -249,7 +252,10 @@ class GuestClient:
         <User id="123456789">
         """
         response, _ = await self.gql.user_by_rest_id(user_id)
-        return User(self, response['data']['user']['result'])
+        user_data = response.get('data', {}).get('user', {}).get('result')
+        if not user_data:
+            raise Exception(f'User {user_id} not found')
+        return User(self, user_data)
 
     async def get_user_tweets(
         self,
@@ -307,11 +313,12 @@ class GuestClient:
         if not instructions_:
             return []
         instructions = instructions_[0]
-        items = find_entry_by_type(instructions, 'TimelineAddEntries')['entries']
+        add_entries = find_entry_by_type(instructions, 'TimelineAddEntries')
+        items = add_entries.get('entries', []) if add_entries else []
         results = []
 
         for item in items:
-            entry_id = item['entryId']
+            entry_id = item.get('entryId', '')
             if not entry_id.startswith(('tweet', 'profile-conversation', 'profile-grid')):
                 continue
             tweet = tweet_from_data(self, item)
@@ -384,23 +391,28 @@ class GuestClient:
         """
         response, _ = await self.gql.user_highlights_tweets(user_id, count, cursor)
 
-        instructions = response['data']['user']['result']['timeline']['timeline']['instructions']
+        instructions = (
+            response.get('data', {}).get('user', {}).get('result', {})
+            .get('timeline', {}).get('timeline', {}).get('instructions', [])
+        )
         instruction = find_entry_by_type(instructions, 'TimelineAddEntries')
         if instruction is None:
             return Result.empty()
-        entries = instruction['entries']
+        entries = instruction.get('entries', [])
         previous_cursor = None
         next_cursor = None
         results = []
 
         for entry in entries:
-            entryId = entry['entryId']
+            entryId = entry.get('entryId', '')
             if entryId.startswith('tweet'):
-                results.append(tweet_from_data(self, entry))
+                tweet = tweet_from_data(self, entry)
+                if tweet is not None:
+                    results.append(tweet)
             elif entryId.startswith('cursor-top'):
-                previous_cursor = entry['content']['value']
+                previous_cursor = entry.get('content', {}).get('value')
             elif entryId.startswith('cursor-bottom'):
-                next_cursor = entry['content']['value']
+                next_cursor = entry.get('content', {}).get('value')
 
         return Result(
             results,

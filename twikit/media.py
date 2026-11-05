@@ -260,30 +260,32 @@ class Video(Media):
 
     @property
     def _streams(self) -> list:
-        return self.video_info.get('variants')
+        info = self.video_info
+        if not info:
+            return []
+        return info.get('variants', [])
 
     @property
     def streams(self) -> list[Stream]:
         video_streams = filter(
-            lambda x: x['content_type'].startswith('video'),
+            lambda x: x.get('content_type', '').startswith('video'),
             self._streams
         )
         return [Stream(self._client, stream_data) for stream_data in video_streams]
 
     async def _get_playlist(self) -> M3U8 | None:
-        # Returns M3U8 object includes stream information.
         if self._playlist:
             return self._playlist
         m3u8_stream = next(
             filter(
-                lambda x: x['content_type'] == 'application/x-mpegURL',
+                lambda x: x.get('content_type') == 'application/x-mpegURL',
                 self._streams
             ),
             None
         )
         if not m3u8_stream:
-            raise None
-        response, _ = await self._client.get(m3u8_stream['url'])
+            return None
+        response, _ = await self._client.get(m3u8_stream.get('url', ''))
         playlist = m3u8.loads(response)
         self._playlist = playlist
         return playlist
@@ -347,7 +349,7 @@ MEDIA_TYPE_MAPPING = {
 
 
 def _media_from_data(client, data) -> Media:
-    type = data['type']
+    type = data.get('type')
     cls = MEDIA_TYPE_MAPPING.get(type)
     if not cls:
         print('unknown media type')

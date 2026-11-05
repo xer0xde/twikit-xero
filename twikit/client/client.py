@@ -3241,12 +3241,15 @@ class Client:
         """
         response = await self._send_dm(group_id, text, media_id, reply_to)
 
-        message_data = find_dict(response, 'message_data', find_one=True)[0]
-        users = list(response['users'].values())
+        message_data_ = find_dict(response, 'message_data', find_one=True)
+        if not message_data_:
+            raise TwitterException('Failed to send group DM: message_data not found in response.')
+        message_data = message_data_[0]
+        users = list(response.get('users', {}).values())
         return GroupMessage(
             self,
             message_data,
-            users[0]['id_str'],
+            users[0]['id_str'] if users else None,
             group_id
         )
 
@@ -3405,8 +3408,10 @@ class Client:
         <List id="...">
         """
         response, _ = await self.gql.create_list(name, description, is_private)
-        list_info = find_dict(response, 'list', find_one=True)[0]
-        return List(self, list_info)
+        list_info_ = find_dict(response, 'list', find_one=True)
+        if not list_info_:
+            raise TwitterException('Failed to create list: list data not found in response.')
+        return List(self, list_info_[0])
 
     async def edit_list_banner(self, list_id: str, media_id: str) -> Response:
         """
@@ -3483,8 +3488,10 @@ class Client:
         ... )
         """
         response, _ = await self.gql.update_list(list_id, name, description, is_private)
-        list_info = find_dict(response, 'list', find_one=True)[0]
-        return List(self, list_info)
+        list_info_ = find_dict(response, 'list', find_one=True)
+        if not list_info_:
+            raise TwitterException('Failed to update list: list data not found in response.')
+        return List(self, list_info_[0])
 
     async def add_list_member(self, list_id: str, user_id: str) -> List:
         """
@@ -3563,7 +3570,10 @@ class Client:
         """
         response, _ = await self.gql.list_management_pace_timeline(count, cursor)
 
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries_ = find_dict(response, 'entries', find_one=True)
+        if not entries_:
+            return Result([])
+        entries = entries_[0]
         items = find_dict(entries, 'items')
 
         if len(items) < 2:
@@ -3571,13 +3581,15 @@ class Client:
 
         lists = []
         for list in items[1]:
-            lists.append(List(self, list['item']['itemContent']['list']))
+            list_content = list.get('item', {}).get('itemContent', {}).get('list')
+            if list_content is not None:
+                lists.append(List(self, list_content))
 
-        next_cursor = entries[-1]['content']['value']
+        next_cursor = entries[-1].get('content', {}).get('value') if entries else None
 
         return Result(
             lists,
-            partial(self.get_lists, count, next_cursor),
+            partial(self.get_lists, count, next_cursor) if next_cursor else None,
             next_cursor
         )
 
@@ -3645,11 +3657,11 @@ class Client:
         if not items_:
             raise ValueError(f'Invalid list id: {list_id}')
         items = items_[0]
-        next_cursor = items[-1]['content']['value']
+        next_cursor = items[-1].get('content', {}).get('value') if items else None
 
         results = []
         for item in items:
-            if not item['entryId'].startswith('tweet'):
+            if not item.get('entryId', '').startswith('tweet'):
                 continue
 
             tweet = tweet_from_data(self, item)
@@ -3668,20 +3680,25 @@ class Client:
         """
         response, _ = await f(list_id, count, cursor)
 
-        items = find_dict(response, 'entries', find_one=True)[0]
+        items_ = find_dict(response, 'entries', find_one=True)
+        if not items_:
+            return Result([])
+        items = items_[0]
         results = []
+        next_cursor = None
         for item in items:
-            entry_id = item['entryId']
+            entry_id = item.get('entryId', '')
             if entry_id.startswith('user'):
-                user_info = find_dict(item, 'result', find_one=True)[0]
-                results.append(User(self, user_info))
+                user_info_ = find_dict(item, 'result', find_one=True)
+                if user_info_:
+                    results.append(User(self, user_info_[0]))
             elif entry_id.startswith('cursor-bottom'):
-                next_cursor = item['content']['value']
+                next_cursor = item.get('content', {}).get('value')
                 break
 
         return Result(
             results,
-            partial(self._get_list_users, f, list_id, count, next_cursor),
+            partial(self._get_list_users, f, list_id, count, next_cursor) if next_cursor else None,
             next_cursor
         )
 
@@ -3776,21 +3793,27 @@ class Client:
         >>> more_lists = await lists.next()  # Retrieve more lists
         """
         response, _ = await self.gql.search_timeline(query, 'Lists', count, cursor)
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries_ = find_dict(response, 'entries', find_one=True)
+        if not entries_:
+            return Result([])
+        entries = entries_[0]
 
         if cursor is None:
-            items = entries[0]['content']['items']
+            items = entries[0].get('content', {}).get('items', []) if entries else []
         else:
-            items = find_dict(response, 'moduleItems', find_one=True)[0]
+            module_items_ = find_dict(response, 'moduleItems', find_one=True)
+            items = module_items_[0] if module_items_ else []
 
         lists = []
         for item in items:
-            lists.append(List(self, item['item']['itemContent']['list']))
-        next_cursor = entries[-1]['content']['value']
+            list_data = item.get('item', {}).get('itemContent', {}).get('list')
+            if list_data is not None:
+                lists.append(List(self, list_data))
+        next_cursor = entries[-1].get('content', {}).get('value') if entries else None
 
         return Result(
             lists,
-            partial(self.search_list, query, count, next_cursor),
+            partial(self.search_list, query, count, next_cursor) if next_cursor else None,
             next_cursor
         )
 
@@ -3872,13 +3895,17 @@ class Client:
 
             notifications.append(Notification(self, notification, tweet, user))
 
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries_ = find_dict(response, 'entries', find_one=True)
+        if not entries_:
+            return Result(notifications)
+        entries = entries_[0]
         cursor_bottom_entry = [
             i for i in entries
-            if i['entryId'].startswith('cursor-bottom')
+            if i.get('entryId', '').startswith('cursor-bottom')
         ]
         if cursor_bottom_entry:
-            next_cursor = find_dict(cursor_bottom_entry[0], 'value', find_one=True)[0]
+            value_ = find_dict(cursor_bottom_entry[0], 'value', find_one=True)
+            next_cursor = value_[0] if value_ else None
         else:
             next_cursor = None
 
@@ -3918,10 +3945,14 @@ class Client:
         """
         response, _ = await self.gql.search_community(query, cursor)
 
-        items = find_dict(response, 'items_results', find_one=True)[0]
+        items_ = find_dict(response, 'items_results', find_one=True)
+        if not items_:
+            return Result([])
         communities = []
-        for item in items:
-            communities.append(Community(self, item['result']))
+        for item in items_[0]:
+            result = item.get('result')
+            if result is not None:
+                communities.append(Community(self, result))
         next_cursor_ = find_dict(response, 'next_cursor', find_one=True)
         next_cursor = next_cursor_[0] if next_cursor_ else None
         if next_cursor is None:
@@ -3949,8 +3980,10 @@ class Client:
             Community object.
         """
         response, _ = await self.gql.community_query(community_id)
-        community_data = find_dict(response, 'result', find_one=True)[0]
-        return Community(self, community_data)
+        community_data_ = find_dict(response, 'result', find_one=True)
+        if not community_data_:
+            raise TwitterException(f'Community {community_id} not found.')
+        return Community(self, community_data_[0])
 
     async def get_community_tweets(
         self,
@@ -3996,24 +4029,28 @@ class Client:
         else:
             raise ValueError(f'Invalid tweet_type: {tweet_type}')
 
-        entries = find_dict(response, 'entries', find_one=True)[0]
+        entries_ = find_dict(response, 'entries', find_one=True)
+        if not entries_:
+            return Result([])
+        entries = entries_[0]
         if tweet_type == 'Media':
             if cursor is None:
-                items = entries[0]['content']['items']
-                next_cursor = entries[-1]['content']['value']
-                previous_cursor = entries[-2]['content']['value']
+                items = entries[0].get('content', {}).get('items', []) if entries else []
+                next_cursor = entries[-1].get('content', {}).get('value') if entries else None
+                previous_cursor = entries[-2].get('content', {}).get('value') if len(entries) >= 2 else None
             else:
-                items = find_dict(response, 'moduleItems', find_one=True)[0]
-                next_cursor = entries[-1]['content']['value']
-                previous_cursor = entries[-2]['content']['value']
+                module_items_ = find_dict(response, 'moduleItems', find_one=True)
+                items = module_items_[0] if module_items_ else []
+                next_cursor = entries[-1].get('content', {}).get('value') if entries else None
+                previous_cursor = entries[-2].get('content', {}).get('value') if len(entries) >= 2 else None
         else:
             items = entries
-            next_cursor = items[-1]['content']['value']
-            previous_cursor = items[-2]['content']['value']
+            next_cursor = items[-1].get('content', {}).get('value') if items else None
+            previous_cursor = items[-2].get('content', {}).get('value') if len(items) >= 2 else None
 
         tweets = []
         for item in items:
-            if not item['entryId'].startswith(('tweet', 'communities-grid')):
+            if not item.get('entryId', '').startswith(('tweet', 'communities-grid')):
                 continue
 
             tweet = tweet_from_data(self, item)
@@ -4022,9 +4059,9 @@ class Client:
 
         return Result(
             tweets,
-            partial(self.get_community_tweets, community_id, tweet_type, count, next_cursor),
+            partial(self.get_community_tweets, community_id, tweet_type, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.get_community_tweets, community_id, tweet_type, count, previous_cursor),
+            partial(self.get_community_tweets, community_id, tweet_type, count, previous_cursor) if previous_cursor else None,
             previous_cursor
         )
 
@@ -4055,30 +4092,38 @@ class Client:
         >>> more_tweets = await tweets.next()  # Retrieve more tweets
         """
         response, _ = await self.gql.communities_main_page_timeline(count, cursor)
-        items = find_dict(response, 'entries', find_one=True)[0]
+        items_ = find_dict(response, 'entries', find_one=True)
+        if not items_:
+            return Result([])
+        items = items_[0]
         tweets = []
         for item in items:
-            if not item['entryId'].startswith('tweet'):
+            if not item.get('entryId', '').startswith('tweet'):
                 continue
-            tweet_data = find_dict(item, 'result', find_one=True)[0]
+            tweet_data_ = find_dict(item, 'result', find_one=True)
+            if not tweet_data_:
+                continue
+            tweet_data = tweet_data_[0]
             if 'tweet' in tweet_data:
                 tweet_data = tweet_data['tweet']
-            user_data = tweet_data['core']['user_results']['result']
-            community_data = tweet_data['community_results']['result']
-            community_data['rest_id'] = community_data['id_str']
+            user_data = tweet_data.get('core', {}).get('user_results', {}).get('result')
+            community_data = tweet_data.get('community_results', {}).get('result')
+            if user_data is None or community_data is None:
+                continue
+            community_data['rest_id'] = community_data.get('id_str', '')
             community = Community(self, community_data)
             tweet = Tweet(self, tweet_data, User(self, user_data))
             tweet.community = community
             tweets.append(tweet)
 
-        next_cursor = items[-1]['content']['value']
-        previous_cursor = items[-2]['content']['value']
+        next_cursor = items[-1].get('content', {}).get('value') if items else None
+        previous_cursor = items[-2].get('content', {}).get('value') if len(items) >= 2 else None
 
         return Result(
             tweets,
-            partial(self.get_communities_timeline, count, next_cursor),
+            partial(self.get_communities_timeline, count, next_cursor) if next_cursor else None,
             next_cursor,
-            partial(self.get_communities_timeline, count, previous_cursor),
+            partial(self.get_communities_timeline, count, previous_cursor) if previous_cursor else None,
             previous_cursor
         )
 
@@ -4139,8 +4184,11 @@ class Client:
             The requested community.
         """
         response, _ = await self.gql.request_to_join_community(community_id, answer)
-        community_data = find_dict(response, 'result', find_one=True)[0]
-        community_data['rest_id'] = community_data['id_str']
+        community_data_ = find_dict(response, 'result', find_one=True)
+        if not community_data_:
+            raise TwitterException(f'Failed to request to join community {community_id}.')
+        community_data = community_data_[0]
+        community_data['rest_id'] = community_data.get('id_str', '')
         return Community(self, community_data)
 
     async def _get_community_users(self, f, community_id: str, count: int, cursor: str | None):
@@ -4149,7 +4197,10 @@ class Client:
         """
         response, _ = await f(community_id, count, cursor)
 
-        items = find_dict(response, 'items_results', find_one=True)[0]
+        items_ = find_dict(response, 'items_results', find_one=True)
+        if not items_:
+            return Result([])
+        items = items_[0]
         users = []
         for item in items:
             if 'result' not in item:
